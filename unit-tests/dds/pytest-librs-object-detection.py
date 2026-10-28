@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 pytestmark = [
     pytest.mark.dds,
-    pytest.mark.flaky( retries=2 ),
+    pytest.mark.flaky( reruns=2 ),
 ]
 
 if rspy.log.nested is not None:
@@ -35,8 +35,8 @@ if rspy.log.nested is not None:
         "product-line": "D400"
     } )
 
-    od = dds.object_detection_stream_server( 'Object Detection', 'Inference Sensor' )
-    od.init_profiles( [dds.inference_stream_profile( 30 )], 0 )
+    od = dds.object_detection_stream_server( 'Object Detection', 'Perception' )
+    od.init_profiles( [dds.perception_stream_profile( 30 )], 0 )
     od.init_options( [] )
 
     depth = dds.depth_stream_server( 'Depth', 'Stereo Module' )  # LibRS expects a depth sensor
@@ -81,19 +81,25 @@ if rspy.log.nested is not None:
             "source_frame_id": 42,
             "version": 1
         }
-        od.publish_inference( json_module.dumps( payload ) )
+        od.publish_perception( json_module.dumps( payload ) )
 
     def publish_single_detection():
         payload = {
             "frame_id": 2,
             "number_of_detections": 1,
             "detections": [
-                { "class_id": 0, "confidence": 92, "x1": 50, "y1": 60, "x2": 200, "y2": 300, "distance": 0.0 }
+                {
+                    "class_id": 0, "confidence": 92,
+                    "x1": 50, "y1": 60, "x2": 200, "y2": 300,
+                    "distance": 2.291,
+                    "world_pos": { "x": 1.0, "y": -0.5, "z": 2.0 },
+                    "image_pos": { "x": 321.5, "y": 181.25 }
+                }
             ],
             "source_frame_id": 43,
             "version": 1
         }
-        od.publish_inference( json_module.dumps( payload ) )
+        od.publish_perception( json_module.dumps( payload ) )
 
     def publish_zero_detections():
         payload = {
@@ -103,7 +109,7 @@ if rspy.log.nested is not None:
             "source_frame_id": 44,
             "version": 1
         }
-        od.publish_inference( json_module.dumps( payload ) )
+        od.publish_perception( json_module.dumps( payload ) )
 
 else:
     ###############################################################################################################
@@ -130,8 +136,8 @@ else:
             assert dev is not None, 'Test OD Device not found among SW devices'
             sensors = dev.query_sensors()
             assert len( sensors ) == 3
-            sensor = next( (s for s in sensors if s.get_info( rs.camera_info.name ) == 'Inference Sensor'), None )
-            assert sensor is not None, 'Inference Sensor not found'
+            sensor = next( (s for s in sensors if s.get_info( rs.camera_info.name ) == 'Perception'), None )
+            assert sensor is not None, 'Perception not found'
             color_sensor = next( (s for s in sensors if s.get_info( rs.camera_info.name ) == 'RGB Camera'), None )
             assert color_sensor is not None, 'RGB Camera sensor not found'
 
@@ -141,6 +147,8 @@ else:
             assert len( od_profiles ) == 1
             od_profile = od_profiles[0]
             assert od_profile.fps() == 30
+            assert od_profile.stream_name() == 'Object Detection', \
+                f'Expected stream name "Object Detection", got "{od_profile.stream_name()}"'
 
             # Open sensor and start streaming
             sensor.open( [od_profile] )
@@ -182,6 +190,8 @@ else:
                     check.equal( det0.top_left_y,     20 )
                     check.equal( det0.bottom_right_x, 100 )
                     check.equal( det0.bottom_right_y, 200 )
+                    check.equal( det0.center_of_mass_valid, 0 )
+                    check.equal( det0.world_position.z, 0.0 )
 
                     det1 = odf.get_detection( 1 )
                     check.equal( det1.class_id,       1  )
@@ -210,6 +220,13 @@ else:
                     check.equal( det.top_left_y,     60  )
                     check.equal( det.bottom_right_x, 200 )
                     check.equal( det.bottom_right_y, 300 )
+                    check.is_true( abs( det.depth - 2.291 ) < 1e-5 )
+                    check.equal( det.center_of_mass_valid, 1 )
+                    check.is_true( abs( det.world_position.x - 1.0 ) < 1e-5 )
+                    check.is_true( abs( det.world_position.y + 0.5 ) < 1e-5 )
+                    check.is_true( abs( det.world_position.z - 2.0 ) < 1e-5 )
+                    check.is_true( abs( det.center_of_mass_x - 321.5 ) < 1e-5 )
+                    check.is_true( abs( det.center_of_mass_y - 181.25 ) < 1e-5 )
 
     #
     #############################################################################################
@@ -226,14 +243,29 @@ else:
     #
     #############################################################################################
     #
+    @pytest.mark.parametrize( 'corruption', ['count', 'crc'] )
+    def test_rejects_invalid_payload(remote_and_streaming, corruption):
+        remote, _, _, queue = remote_and_streaming
+        remote.run( 'publish_two_detections()' )
+        f = queue.wait_for_frame( 500 )
+        if check.is_true( f, msg='no frame received' ):
+            odf = f.as_object_detection_frame()
+            if check.is_true( odf, msg='frame is not an object_detection_frame' ):
+                raw = memoryview( odf.get_data() )
+                if corruption == 'count':
+                    raw[36:38] = b'\x41\x00'  # little-endian detection count 65
+                else:
+                    raw[-1] ^= 0x01
+                check.equal( odf.get_detection_count(), 0 )
+
+    #
+    #############################################################################################
+    #
     def test_sensor_downcast(remote_and_streaming):
         _, sensor, _, _ = remote_and_streaming
-        check.is_true( sensor.is_inference_sensor(), msg='sensor should be an inference_sensor' )
-        check.is_true( sensor.is_object_detection_sensor(), msg='sensor should be an object_detection_sensor' )
-        inference_s = sensor.as_inference_sensor()
-        check.is_true( inference_s, msg='as_inference_sensor() should return truthy' )
-        od_s = sensor.as_object_detection_sensor()
-        check.is_true( od_s, msg='as_object_detection_sensor() should return truthy' )
+        check.is_true( sensor.is_perception_sensor(), msg='sensor should be a perception_sensor' )
+        perception_s = sensor.as_perception_sensor()
+        check.is_true( perception_s, msg='as_perception_sensor() should return truthy' )
 
     #
     #############################################################################################
@@ -261,16 +293,12 @@ else:
     #############################################################################################
     #
     def test_downcast_failure_color_sensor(remote_and_streaming):
-        """Downcast failure: color sensor is not an inference sensor."""
+        """Downcast failure: color sensor is not a perception sensor."""
         _, _, color_sensor, _ = remote_and_streaming
-        check.is_true( not color_sensor.is_inference_sensor(),
-                       msg='RGB Camera should not be an inference_sensor' )
-        check.is_true( not color_sensor.is_object_detection_sensor(),
-                       msg='RGB Camera should not be an object_detection_sensor' )
-        non_inf = color_sensor.as_inference_sensor()
-        check.is_true( not non_inf, msg='as_inference_sensor() on color sensor should return falsy' )
-        non_od = color_sensor.as_object_detection_sensor()
-        check.is_true( not non_od, msg='as_object_detection_sensor() on color sensor should return falsy' )
+        check.is_true( not color_sensor.is_perception_sensor(),
+                       msg='RGB Camera should not be a perception_sensor' )
+        non_perception = color_sensor.as_perception_sensor()
+        check.is_true( not non_perception, msg='as_perception_sensor() on color sensor should return falsy' )
 
     #
     #############################################################################################

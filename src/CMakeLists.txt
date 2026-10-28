@@ -11,6 +11,8 @@ include(${_rel_path}/usb/CMakeLists.txt)
 include(${_rel_path}/fw-logs/CMakeLists.txt)
 include(${_rel_path}/fw-update/CMakeLists.txt)
 
+include(${_rel_path}/rum/CMakeLists.txt)
+
 message(STATUS "using ${BACKEND}")
 
 if(UNIX OR (ANDROID_NDK_TOOLCHAIN_INCLUDED AND (${BACKEND} STREQUAL RS2_USE_V4L2_BACKEND)))
@@ -70,7 +72,7 @@ if(BUILD_WITH_L500)
     )
 endif()
 
-if(BUILD_WITH_CUDA)
+if(BUILD_WITH_CUDA OR BUILD_WITH_HIP)
     include(${_rel_path}/cuda/CMakeLists.txt)
 endif()
 
@@ -134,6 +136,7 @@ target_sources(${LRS_TARGET}
         "${CMAKE_CURRENT_LIST_DIR}/backend.h"
         "${CMAKE_CURRENT_LIST_DIR}/backend-device.h"
         "${CMAKE_CURRENT_LIST_DIR}/platform/backend-device-group.h"
+        "${CMAKE_CURRENT_LIST_DIR}/platform/camera-identifier.h"
         "${CMAKE_CURRENT_LIST_DIR}/platform/platform-device-info.h"
         "${CMAKE_CURRENT_LIST_DIR}/platform/device-watcher.h"
         "${CMAKE_CURRENT_LIST_DIR}/platform/frame-object.h"
@@ -175,6 +178,7 @@ target_sources(${LRS_TARGET}
         "${CMAKE_CURRENT_LIST_DIR}/platform-camera.h"
         "${CMAKE_CURRENT_LIST_DIR}/pose.h"
         "${CMAKE_CURRENT_LIST_DIR}/safety-sensor.h"
+        "${CMAKE_CURRENT_LIST_DIR}/composite-option-interface.h"
         "${CMAKE_CURRENT_LIST_DIR}/sensor.h"
         "${CMAKE_CURRENT_LIST_DIR}/hid-sensor.h"
         "${CMAKE_CURRENT_LIST_DIR}/uvc-sensor.h"
@@ -200,7 +204,7 @@ target_sources(${LRS_TARGET}
         "${CMAKE_CURRENT_LIST_DIR}/composite-frame.h"
         "${CMAKE_CURRENT_LIST_DIR}/points.h"
         "${CMAKE_CURRENT_LIST_DIR}/labeled-points.h"
-        "${CMAKE_CURRENT_LIST_DIR}/inference-frame.h"
+        "${CMAKE_CURRENT_LIST_DIR}/perception-frame.h"
         "${CMAKE_CURRENT_LIST_DIR}/object-detection-frame.h"
         "${CMAKE_CURRENT_LIST_DIR}/depth-sensor.h"
         "${CMAKE_CURRENT_LIST_DIR}/color-sensor.h"
@@ -223,4 +227,5 @@ if(BUILD_WITH_DDS)
         "${CMAKE_CURRENT_LIST_DIR}/dds/*"
         )
     target_sources( ${LRS_TARGET} PRIVATE ${RS_DDS_SOURCE_FILES} )
+    hide_sources_symbols( ${RS_DDS_SOURCE_FILES} )
 endif()

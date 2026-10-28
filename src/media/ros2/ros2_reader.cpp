@@ -2,6 +2,9 @@
 // Copyright(c) 2025 RealSense, Inc. All Rights Reserved.
 
 #include "ros2_reader.h"
+#include "ros2_image_codec.h"
+#include <sensor_msgs/msg/CompressedImage.h>
+#include <zstd.h>
 #include "image.h"
 #include "ds/ds-device-common.h"
 #include "ds/d400/d400-private.h"
@@ -13,7 +16,7 @@
 #include <src/color-sensor.h>
 #include <src/safety-sensor.h>
 #include <src/depth-mapping-sensor.h>
-#include <src/inference-sensor.h>
+#include <src/perception-sensor.h>
 #include <src/points.h>
 #include <src/labeled-points.h>
 #include <src/context.h>
@@ -158,6 +161,49 @@ namespace librealsense
         return std::make_shared<serialized_end_of_file>();
     }
 
+    // Reverses write_compressed_video_frame: zstd payloads carry the raw pixels; PNG payloads
+    // (optionally behind a compressedDepth ConfigHeader) are decoded and restored to the
+    // source channel order.
+    static std::vector<uint8_t> decode_compressed_image(const sensor_msgs::msg::CompressedImage& ci)
+    {
+        auto const& format = ci.format();
+        auto const& payload = ci.data();
+
+        if (format.find("; zstd; ") != std::string::npos)
+        {
+            auto size = ros2_reader_base::zstd_frame_content_size(payload.data(), payload.size());
+            std::vector<uint8_t> out(size);
+            auto result = ZSTD_decompress(out.data(), out.size(), payload.data(), payload.size());
+            if (ZSTD_isError(result))
+                throw std::runtime_error(rsutils::string::from()
+                    << "Zstd decompression failed: " << ZSTD_getErrorName(result));
+            out.resize(result);
+            return out;
+        }
+
+        auto png = payload.data();
+        auto png_size = payload.size();
+        if (format.find("compressedDepth") != std::string::npos)
+        {
+            if (png_size <= sizeof(ros2_image_codec::config_header))
+                throw std::runtime_error("compressedDepth payload too small");
+            png += sizeof(ros2_image_codec::config_header);
+            png_size -= sizeof(ros2_image_codec::config_header);
+        }
+
+        size_t channels;
+        auto pixels = ros2_image_codec::decode_png(png, png_size, channels);
+
+        // PNG stores RGB order; BGR-sourced formats need their channels restored
+        auto ros_encoding = format.substr(0, format.find(';'));
+        if ((ros_encoding == "bgr8" || ros_encoding == "bgra8") && channels >= 3)
+        {
+            for (size_t i = 0; i + channels <= pixels.size(); i += channels)
+                std::swap(pixels[i], pixels[i + 2]);
+        }
+        return pixels;
+    }
+
     std::shared_ptr< serialized_frame > ros2_reader::create_frame(const std::shared_ptr<rosbag2_storage::SerializedBagMessage>& msg)
     {
         nanoseconds timestamp(msg->time_stamp);
@@ -168,25 +214,36 @@ namespace librealsense
         read_frame_metadata(additional_data);
 
         bool is_imu_topic       = (msg->topic_name.find("/" + std::string(ros2_topic::ros_imu_type_str())              + "/") != std::string::npos);
-        bool is_inference_topic = (msg->topic_name.find("/" + std::string(ros2_topic::ros_object_detection_type_str()) + "/") != std::string::npos);
+        bool is_perception_topic = (msg->topic_name.find("/" + std::string(ros2_topic::ros_object_detection_type_str()) + "/") != std::string::npos);
+        bool is_compressed_topic = (msg->topic_name.find("/data/compressed") != std::string::npos);
 
         std::vector<uint8_t> data;
 
-        if (is_inference_topic)
+        if (is_compressed_topic)
         {
-            // Inference frames are stored as a JSON string (std_msgs/msg/String).
+            auto ci = deserialize_message<sensor_msgs::msg::CompressedImage>(msg);
+            data = decode_compressed_image(ci);
+        }
+        else if (is_perception_topic)
+        {
+            // Perception frames are stored as a JSON string (std_msgs/msg/String).
             // Re-parse using the same format written by ros2_writer and construct the binary payload.
             auto json_str = deserialize_message<cdr_string>(msg).value;
             auto j = rsutils::json::parse( json_str );
 
             auto n_detections = j.value( "number_of_detections", uint16_t(0) );
+            auto dets_j = j.find( "detections" );
 
-            size_t const base_size = sizeof( object_detection_frame::object_detection_payload )
-                                   - sizeof( object_detection_frame::object_detection_entry );
-            size_t const total_size = base_size + n_detections * sizeof( object_detection_frame::object_detection_entry );
+            size_t const entry_size = sizeof( object_detection_frame::object_detection_payload_entry );
+            size_t const base_size = sizeof( object_detection_frame::object_detection_frame_header )
+                                   + sizeof( object_detection_frame::object_detection_payload_header );
+            size_t const total_size = base_size + n_detections * entry_size;
 
             data.resize( total_size );
-            auto * payload = reinterpret_cast< object_detection_frame::object_detection_payload * >( data.data() );
+            auto * header = reinterpret_cast< object_detection_frame::object_detection_frame_header * >( data.data() );
+            auto * payload = reinterpret_cast< object_detection_frame::object_detection_payload_header * >(
+                data.data() + sizeof( *header ) );
+            auto * entries = data.data() + base_size;
 
             payload->frame_id             = j.value( "frame_id", uint64_t(0) );
             payload->number_of_detections = n_detections;
@@ -194,33 +251,48 @@ namespace librealsense
             payload->source_frame_id      = j.value( "source_frame_id", uint32_t(0) );
             payload->timestamp_ms         = j.value( "timestamp_us", 0.0 ) * MICROSEC_TO_MILLISEC;
 
-            auto dets_j = j.find( "detections" );
             if( dets_j != j.end() && dets_j->is_array() )
             {
                 for( uint16_t i = 0; i < n_detections && i < dets_j->size(); ++i )
                 {
                     auto const & det = (*dets_j)[i];
-                    auto & e         = payload->detections[i];
-                    e.detection_id   = i;
-                    e.detection_type = det.value( "class_id",    uint8_t(0) );
-                    e.confidence     = det.value( "confidence",  uint8_t(0) );
-                    e.top_left_x     = det.value( "x1",          uint16_t(0) );
-                    e.top_left_y     = det.value( "y1",          uint16_t(0) );
-                    e.bottom_right_x = det.value( "x2",          uint16_t(0) );
-                    e.bottom_right_y = det.value( "y2",          uint16_t(0) );
-                    e.distance       = det.value( "distance",    0.0f );
+                    object_detection_frame::object_detection_payload_entry entry{};
+                    entry.detection_id   = i;
+                    entry.detection_type = det.value( "class_id",    uint8_t(0) );
+                    entry.confidence     = det.value( "confidence",  uint8_t(0) );
+                    entry.top_left_x     = det.value( "x1",          uint16_t(0) );
+                    entry.top_left_y     = det.value( "y1",          uint16_t(0) );
+                    entry.bottom_right_x = det.value( "x2",          uint16_t(0) );
+                    entry.bottom_right_y = det.value( "y2",          uint16_t(0) );
+                    entry.distance       = det.value( "distance",    0.0f );
+
+                    // A frame can have individual detections with no COM (firmware reported it invalid
+                    // for that one); leave world/image zeroed in that case rather than assuming the keys
+                    // are present - this also covers older recordings made before COM data existed at all.
+                    if( det.contains( "world_pos" ) && det["world_pos"].is_object()
+                        && det.contains( "image_pos" ) && det["image_pos"].is_object() )
+                    {
+                        auto const & world = det["world_pos"];
+                        auto const & image = det["image_pos"];
+                        entry.world_x = world.value( "x", 0.0f );
+                        entry.world_y = world.value( "y", 0.0f );
+                        entry.world_z = world.value( "z", 0.0f );
+                        entry.image_x = image.value( "x", 0.0f );
+                        entry.image_y = image.value( "y", 0.0f );
+                    }
+                    memcpy( entries + i * entry_size, &entry, sizeof( entry ) );
                 }
             }
 
             // Fill header so object_detection_frame::validate() passes
-            payload->header.magic_number = object_detection_frame::MAGIC_NUMBER;
-            payload->header.version      = static_cast< uint16_t >( j.value( "version", 1 ) );
-            payload->header.data_type    = static_cast< uint8_t >( inference_frame::type::OBJECT_DETECTION );
-            payload->header.flags        = 0;
-            payload->header.spare        = 0;
-            payload->header.size         = static_cast< uint32_t >( total_size - sizeof( object_detection_frame::object_detection_frame_header ) );
-            uint8_t * payload_data       = reinterpret_cast< uint8_t * >( payload ) + sizeof( object_detection_frame::object_detection_frame_header );
-            payload->header.crc32        = rsutils::number::calc_crc32( payload_data, payload->header.size );
+            header->magic_number = object_detection_frame::MAGIC_NUMBER;
+            header->version      = j.value( "od_version", uint16_t( object_detection_frame::VERSION_V3 ) );
+            header->data_type    = static_cast< uint8_t >( perception_frame::type::OBJECT_DETECTION );
+            header->flags        = 0;
+            header->spare        = 0;
+            header->size         = static_cast< uint32_t >( total_size - sizeof( *header ) );
+            uint8_t * payload_data = data.data() + sizeof( *header );
+            header->crc32        = rsutils::number::calc_crc32( payload_data, header->size );
 
             // Update additional_data fields from the JSON payload
             additional_data.frame_number = static_cast< unsigned long long >( payload->frame_id );
@@ -294,7 +366,7 @@ namespace librealsense
         stream_identifier stream_id = ros2_topic::get_stream_identifier(msg->topic_name);
 
         // Peek at the next message — if it's intrinsics data, consume and use it;
-        // otherwise this is a bare stream profile (e.g. inference) with no extra intrinsics.
+        // otherwise this is a bare stream profile (e.g. perception) with no extra intrinsics.
         auto next = peek_next_cached();
         if (next && (next->topic_name.find("imu_intrinsic") != std::string::npos
                   || next->topic_name.find("camera_info")  != std::string::npos))
@@ -312,10 +384,10 @@ namespace librealsense
             }
         }
 
-        // Bare stream profile — e.g. inference streams
+        // Bare stream profile — e.g. perception streams
         if (stream_id.stream_type == RS2_STREAM_OBJECT_DETECTION)
         {
-            auto profile = std::make_shared<inference_stream_profile>();
+            auto profile = std::make_shared<perception_stream_profile>();
             profile->set_framerate(fps);
             profile->set_format(format);
             profile->set_stream_index(int(stream_id.stream_index));
@@ -738,17 +810,9 @@ namespace librealsense
         void update(std::shared_ptr< extension_snapshot > ext) override {}
     };
 
-    class inference_sensor_snapshot
-        : public virtual inference_sensor
+    class perception_sensor_snapshot
+        : public virtual perception_sensor
         , public extension_snapshot
-    {
-    public:
-        void update(std::shared_ptr< extension_snapshot > ext) override {}
-    };
-
-    class object_detection_sensor_snapshot
-        : public virtual object_detection_sensor
-        , public inference_sensor_snapshot
     {
     public:
         void update(std::shared_ptr< extension_snapshot > ext) override {}
@@ -801,14 +865,9 @@ namespace librealsense
         {
             sensor_extensions[RS2_EXTENSION_DEPTH_MAPPING_SENSOR] = std::make_shared<depth_mapping_sensor_snapshot>();
         }
-        else if (is_object_detection_sensor(sensor_name))
+        else if (is_perception_module_sensor(sensor_name))
         {
-            sensor_extensions[RS2_EXTENSION_OBJECT_DETECTION_SENSOR] = std::make_shared<object_detection_sensor_snapshot>();
-            sensor_extensions[RS2_EXTENSION_INFERENCE_SENSOR] = std::make_shared<inference_sensor_snapshot>();
-        }
-        else if (is_inference_module_sensor(sensor_name))
-        {
-            sensor_extensions[RS2_EXTENSION_INFERENCE_SENSOR] = std::make_shared<inference_sensor_snapshot>();
+            sensor_extensions[RS2_EXTENSION_PERCEPTION_SENSOR] = std::make_shared<perception_sensor_snapshot>();
         }
     }
 
@@ -848,14 +907,12 @@ namespace librealsense
         return (sensor_name.compare("Depth Mapping Camera") == 0);
     }
 
-    bool ros2_reader::is_inference_module_sensor(const std::string& sensor_name)
+    bool ros2_reader::is_perception_module_sensor(const std::string& sensor_name)
     {
-        return (sensor_name.compare("Inference Sensor") == 0);
-    }
-
-    bool ros2_reader::is_object_detection_sensor(const std::string& sensor_name)
-    {
-        return (sensor_name.compare("Object Detection Sensor") == 0);
+        // Old names kept for backward compat with bags recorded before the perception rename.
+        return sensor_name == "Perception"
+            || sensor_name == "Inference Sensor"
+            || sensor_name == "Object Detection Sensor";
     }
 
     // Helpers ---------------------------------------------------------------------
@@ -866,10 +923,10 @@ namespace librealsense
         if (topic.find("/device_") != 0)
             return false;
 
-        // Frame data topics end with /data (e.g., .../image/data, .../imu/data)
-        auto data_suffix = std::string("/data");
-        if (topic.size() < data_suffix.size()
-            || topic.compare(topic.size() - data_suffix.size(), data_suffix.size(), data_suffix) != 0)
+        // Frame data topics end with /data (e.g., .../image/data, .../imu/data);
+        // compressed recordings add an image_transport leaf under /data
+        static const std::regex data_suffix_re(R"(/data(/compressed|/compressedDepth)?$)");
+        if (!std::regex_search(topic, data_suffix_re))
             return false;
 
         try
@@ -966,7 +1023,12 @@ namespace librealsense
             else if (std::regex_match(msg->topic_name, std::regex(sensor_option_regex_str)))
             {
                 uint32_t sensor_index = ros2_topic::get_sensor_index(msg->topic_name);
-                sensors_options[sensor_index] = read_sensor_options({ get_device_index(), sensor_index });
+                // An option re-written mid-recording starts a second, partial scan; keep the first, full
+                // snapshot - later changes still reach playback as serialized_option messages.
+                auto options = read_sensor_options({ get_device_index(), sensor_index });
+                auto & recorded_options = sensors_options[sensor_index];
+                if( ! recorded_options )
+                    recorded_options = options;
             }
             else if (std::regex_match(msg->topic_name, std::regex(post_processing_blocks_regex_str)))
             {
@@ -1041,8 +1103,9 @@ namespace librealsense
 
     std::vector<std::string> ros2_reader::get_stream_topics() const
     {
-        // /device_N/sensor_N/StreamType_Idx/<ros_type>/(data|metadata)
-        auto re = std::regex((rsutils::string::from() << "^/device_" << get_device_index() << "/sensor_\\d+/[^/]+/[^/]+/(data|metadata)$").str());
+        // /device_N/sensor_N/StreamType_Idx/<ros_type>/(data|metadata), with compressed
+        // frame data on an image_transport-convention leaf under /data
+        auto re = std::regex((rsutils::string::from() << "^/device_" << get_device_index() << "/sensor_\\d+/[^/]+/[^/]+/(data(/compressed|/compressedDepth)?|metadata)$").str());
         return filter_topics_by_regex(re);
     }
 

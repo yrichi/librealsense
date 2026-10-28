@@ -23,6 +23,7 @@ namespace librealsense
         // devices under RealSense VID
         const uint16_t D500_RECOVERY_PID      = 0x0CFD; // Shared across the D500 family
         const uint16_t D500_USB2_RECOVERY_PID = 0x0CFE; // Fallback for USB2 hosts
+        const uint16_t D500_MIPI_RECOVERY_PID = 0xBBDD; // D500 MIPI/GMSL DFU recovery (synthetic; no USB enumeration)
         const uint16_t D535_2C_PID            = 0x0C01;
         const uint16_t D535_3C_PID            = 0x0C02;
         const uint16_t D535F_PID              = 0x0C03; // 3C with IR only L/R cover
@@ -31,13 +32,23 @@ namespace librealsense
         const uint16_t D585F_PID              = 0x0C06; // 3C with IR only L/R cover
         const uint16_t D585_2C_PROTO_PID      = 0x0C07;
         const uint16_t D585_3C_PROTO_PID      = 0x0C08;
-        
-        // DS500 depth XU identifiers
-        // Note: selector values differ from the D400-family depth_xu selectors in ds-private.h.
-        const uint8_t DS5_ALIGN_DEPTH              = 0x10;  // Enable depth-to-RGB alignment for OD distance; must be sent before depth streaming starts
-        const uint8_t DS5_HKR_PVT_TEMPERATURE      = 0x15;
-        const uint8_t DS5_HKR_PROJECTOR_TEMPERATURE = 0x16;
-        const uint8_t DS5_HKR_OHM_TEMPERATURE      = 0x17;
+
+        enum d500_xu_id : uint8_t // Note: some values may differ from the D400-family depth_xu selectors in ds-private.h.
+        {
+            DETECTION_DISTANCE    = 0x01,  // Enable FW depth-derived distance for detections
+            ALIGN_DEPTH           = 0x10,  // Enable depth-to-RGB alignment for OD distance; must be sent before depth streaming starts
+            DUAL_RGB_MODE         = 0x12,  // FW spec: csEU_CONTROL_ADVANCED_DEVICE_MODE. 1-byte GET/SET: 0 = dedicated color sensor (3C), 1 = dual RGB (2C). SET triggers PID change on next enumeration.
+            PVT_TEMPERATURE       = 0x15,
+            PROJECTOR_TEMPERATURE = 0x16,
+            OHM_TEMPERATURE       = 0x17,
+            COLORED_IR_AE_POLICY  = 0x19,
+            EXTERNAL_SYNC_MODE    = 0x1A
+        };
+
+        // Same GUID as safety_xu. FW publishes as either safety or inference, not both.
+        const platform::extension_unit inference_xu = { 0, 0x10, 2,
+        { 0xf6c3c3d1, 0x5cde, 0x4477, { 0xad, 0xf0, 0x41, 0x33, 0xf5, 0x8d, 0xa6, 0xf4 } } };
+
 
         // d500 Devices supported by the current version
         static const std::set<std::uint16_t> rs500_sku_pid = {
@@ -67,6 +78,27 @@ namespace librealsense
             D585_3C_PROTO_PID
         };
 
+        // D5x5 (non-safety, non-legacy) SKU family: D535 and D585 in their 2C/3C/F/proto variants.
+        // Gates the DUAL_RGB_MODE XU (0x12) selector that toggles Dual-RGB (2C) vs Dedicated-Color (3C).
+        // D585S has no dual-RGB variant, so it stays out of this set — see uses_interactive_triggered_calibration below.
+        static const std::set<std::uint16_t> d5x5_family_pids = {
+            D535_2C_PID,
+            D535_3C_PID,
+            D535F_PID,
+            D585_2C_PID,
+            D585_3C_PID,
+            D585F_PID,
+            D585_2C_PROTO_PID,
+            D585_3C_PROTO_PID
+        };
+
+        // Interactive Triggered Calibration eligibility: D5x5 family + D585S safety.
+        // D555 stays on the D400 OCC path; D585_LEGACY_PID stays on the current D500 triggered-calibration flow.
+        inline bool uses_interactive_triggered_calibration( uint16_t pid )
+        {
+            return d5x5_family_pids.count( pid ) || pid == D585S_PID;
+        }
+
         static const std::map< std::uint16_t, std::string > rs500_sku_names = {
             { D555_PID,               "RealSense D555" },
             { D555_RECOVERY_PID,      "RealSense D555 Recovery" },
@@ -75,6 +107,7 @@ namespace librealsense
             { D585S_RECOVERY_PID,     "RealSense D585S Recovery"},
             { D500_RECOVERY_PID,      "RealSense D500 Recovery"},
             { D500_USB2_RECOVERY_PID, "RealSense D500 Recovery"},
+            { D500_MIPI_RECOVERY_PID, "RealSense D5xx MIPI Recovery"},
             { D535_2C_PID,            "RealSense D535 Dual RGB" },
             { D535_3C_PID,            "RealSense D535" },
             { D535F_PID,              "RealSense D535F" },
@@ -84,6 +117,46 @@ namespace librealsense
             { D585_2C_PROTO_PID,      "RealSense D585 Proto Dual RGB" },
             { D585_3C_PROTO_PID,      "RealSense D585 Prototype" }
         };
+
+        // D500-only HWM opcodes. Shared opcodes are in ds::fw_cmd (ds/ds-private.h).
+        enum d500_fw_cmd : uint8_t
+        {
+            CUSTOM_CMD               = 0x80, // Custom FW command, sub-command given in param1
+            HKR_THERMAL_COMPENSATION = 0x84, // Control HKR thermal compensation
+            SAFETY_PRESET_READ       = 0x94, // Read safety preset from given index
+            SAFETY_PRESET_WRITE      = 0x95, // Write safety preset to given index
+            APM_STROBE_SET           = 0x96, // Control if Laser on constantly or pulse
+            APM_STROBE_GET           = 0x99, // Query if Laser on constantly or pulse
+            SET_HKR_CONFIG_TABLE     = 0xA6, // HKR Set Internal sub calibration table
+            GET_HKR_CONFIG_TABLE     = 0xA7, // HKR Get Internal sub calibration table
+            CALIBRESTOREEPROM        = 0xA8, // HKR Store EEPROM Calibration
+            RGB_TNR                  = 0xAA, // RGB Temporal Noise Reduction
+            GET_FW_LOGS              = 0xB4, // Get FW logs extended format
+            SET_CALIB_MODE           = 0xB8, // Set Calibration Mode
+            GET_CALIB_STATUS         = 0xB9, // Get Calibration Status
+        };
+
+        inline std::string d500_fw_cmd2str(const d500_fw_cmd state)
+        {
+            switch (state)
+            {
+                ENUM2STR(CUSTOM_CMD);
+                ENUM2STR(HKR_THERMAL_COMPENSATION);
+                ENUM2STR(SAFETY_PRESET_READ);
+                ENUM2STR(SAFETY_PRESET_WRITE);
+                ENUM2STR(APM_STROBE_SET);
+                ENUM2STR(APM_STROBE_GET);
+                ENUM2STR(SET_HKR_CONFIG_TABLE);
+                ENUM2STR(GET_HKR_CONFIG_TABLE);
+                ENUM2STR(CALIBRESTOREEPROM);
+                ENUM2STR(RGB_TNR);
+                ENUM2STR(GET_FW_LOGS);
+                ENUM2STR(SET_CALIB_MODE);
+                ENUM2STR(GET_CALIB_STATUS);
+            default:
+                return ( rsutils::string::from() << "Unrecognized D500 FW command " << state );
+            }
+        }
 
         //TODO
         //static std::map<uint16_t, std::string> d500_device_to_fw_min_version = {
@@ -382,7 +455,19 @@ namespace librealsense
             EHU_IDX_FLASH_DATA_CRC_ERR         = 125U,
             EHU_IDX_FRAME_DELAY_ERR            = 126U,
             EHU_IDX_DSP_UP_CHECKSUM_ERR        = 127U,
-        }; 
+            EHU_IDX_SN_NOT_MATCHED             = 128U,
+            EHU_IDX_FLASH_ACCESS_ERR           = 129U,
+            EHU_IDX_OHM_ACCESS_ERR             = 130U,
+            EHU_IDX_I2C_PORT_ERR               = 131U,
+            EHU_IDX_SYS_IPC_ERR                = 132U,
+            EHU_IDX_PIPE_BUILD_ERR             = 133U,
+            EHU_IDX_PIPE_START_ERR             = 134U,
+            EHU_IDX_PIPE_RUN_ERR               = 135U,
+            EHU_IDX_PIPE_STOP_ERR              = 136U,
+            EHU_IDX_PIPE_TASK_TIMEOUT_ERR      = 137U,
+            EHU_IDX_POT_FAIL                   = 138U,
+            EHU_IDX_IPU_SW_FUNCTION_ERR        = 139U,
+        };
 
         const std::map< int, std::string > d500_fw_error_report = { // Received from HKR team [RSDEV-643]
             { EHU_IDX_START, "NO ERROR" },
@@ -509,10 +594,22 @@ namespace librealsense
             { EHU_IDX_OPT_PARITY_ERR, "OPT PARITY ERROR" },
             { EHU_IDX_EHU_LOCK, "EHU LOCK ERROR" },
             { EHU_IDX_SW_OS_EXCEPTION, "SW OS EXCEPTION ERROR" },
-            { EHU_IDX_FRAME_DELAY_ERR, "FRAME DELAY ERROR" },
             { EHU_IDX_SF_OS_EXCEPTION, "SF OS EXCEPTION ERROR" },
             { EHU_IDX_FLASH_DATA_CRC_ERR, "FLASH DATA CRC ERROR" },
+            { EHU_IDX_FRAME_DELAY_ERR, "FRAME DELAY ERROR" },
             { EHU_IDX_DSP_UP_CHECKSUM_ERR, "DSP UP CHECKSUM ERROR" },
+            { EHU_IDX_SN_NOT_MATCHED, "SN NOT MATCHED" },
+            { EHU_IDX_FLASH_ACCESS_ERR, "FLASH ACCESS ERROR" },
+            { EHU_IDX_OHM_ACCESS_ERR, "OHM ACCESS ERROR" },
+            { EHU_IDX_I2C_PORT_ERR, "I2C PORT ERROR" },
+            { EHU_IDX_SYS_IPC_ERR, "SYS IPC ERROR" },
+            { EHU_IDX_PIPE_BUILD_ERR, "PIPE BUILD ERROR" },
+            { EHU_IDX_PIPE_START_ERR, "PIPE START ERROR" },
+            { EHU_IDX_PIPE_RUN_ERR, "PIPE RUN ERROR" },
+            { EHU_IDX_PIPE_STOP_ERR, "PIPE STOP ERROR" },
+            { EHU_IDX_PIPE_TASK_TIMEOUT_ERR, "PIPE TASK TIMEOUT ERROR" },
+            { EHU_IDX_POT_FAIL, "POT FAIL" },
+            { EHU_IDX_IPU_SW_FUNCTION_ERR, "IPU SW FUNCTION ERROR" },
         };
 
         class d500_hwmon_response : public hwmon_response_interface

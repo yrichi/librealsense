@@ -16,16 +16,18 @@ frame_prefix = re.compile( rb'^\[\d{4}\] ', re.MULTILINE )
 # If we want to run a specific test / test group, we can use the -r flag
 
 pytestmark = [
-    pytest.mark.device("D400*"),
+    pytest.mark.device_each("D400*"),
+    # D500 is currently disabled until all tests pass there
+    #pytest.mark.device_each("D500*"),
     pytest.mark.context("nightly"),
     pytest.mark.context("gui"),
-    # Opt out of --retries: the outer pytest-timeout clock is not reset between
-    # attempts, so a retry runs on the leftover budget and gets killed mid-viewer.
-    pytest.mark.flaky(retries=0),
+    # Opt out of retries: this launches the realsense-viewer GUI and is long-running /
+    # not reliably retryable, so a rerun just doubles CI time without adding signal.
+    pytest.mark.flaky(reruns=0),
 ]
 
 
-def test_realsense_viewer_gui(module_device_setup):
+def _run_viewer_tests( test_filter=None ):
     viewer_tests = repo.find_built_exe('tools/realsense-viewer', 'realsense-viewer-tests')
     assert viewer_tests, "realsense-viewer-tests not found"
 
@@ -55,6 +57,8 @@ def test_realsense_viewer_gui(module_device_setup):
                 shutil.copy2( src, dst )
 
     cmd += [viewer_tests, '--auto']
+    if test_filter:
+        cmd += ['-r', test_filter]
     log.debug( 'running: %s', ' '.join( cmd ) )
     # Cap the child below the global pytest-timeout (200s default in conftest.py) so the
     # subprocess is reaped here rather than leaked when the outer test thread is killed.
@@ -92,3 +96,7 @@ def test_realsense_viewer_gui(module_device_setup):
     if p.returncode != 0:
         log.error( 'realsense-viewer-tests exited with code %s', p.returncode )
     assert p.returncode == 0, f'realsense-viewer-tests exited with code {p.returncode}'
+
+
+def test_realsense_viewer_gui(module_device_setup):
+    _run_viewer_tests()

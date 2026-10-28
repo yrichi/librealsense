@@ -8,6 +8,7 @@
 #include "core/video-frame.h"
 #include "core/notification.h"
 #include "depth-sensor.h"
+#include "rum/rum-hooks.h"
 #include <src/metadata-parser.h>
 
 #include <rsutils/string/from.h>
@@ -79,6 +80,7 @@ software_sensor::software_sensor( std::string const & name, software_device * ow
 
 software_sensor::~software_sensor()
 {
+    try { record_rum_stream_duration(); } catch( ... ) {}  // flush in-flight interval on teardown/disconnect
 }
 
 
@@ -141,17 +143,17 @@ std::shared_ptr< stream_profile_interface > software_sensor::add_pose_stream( rs
 }
 
 
-std::shared_ptr< stream_profile_interface > software_sensor::add_inference_stream( rs2_inference_stream inference_stream, bool is_default, std::string name )
+std::shared_ptr< stream_profile_interface > software_sensor::add_perception_stream( rs2_perception_stream perception_stream, bool is_default, std::string name )
 {
-    auto profile = std::make_shared< inference_stream_profile >();
+    auto profile = std::make_shared< perception_stream_profile >();
     if( ! profile )
         throw librealsense::invalid_value_exception( "null pointer passed for argument \"profile\"." );
 
-    profile->set_format( inference_stream.fmt );
-    profile->set_framerate( inference_stream.fps );
-    profile->set_stream_index( inference_stream.index );
-    profile->set_stream_type( inference_stream.type );
-    profile->set_unique_id( inference_stream.uid );
+    profile->set_format( perception_stream.fmt );
+    profile->set_framerate( perception_stream.fps );
+    profile->set_stream_index( perception_stream.index );
+    profile->set_stream_type( perception_stream.type );
+    profile->set_unique_id( perception_stream.uid );
     profile->set_name( name );
     if( is_default )
         profile->tag_profile( profile_tag::PROFILE_TAG_DEFAULT );
@@ -199,6 +201,7 @@ void software_sensor::open( const stream_profiles & requests )
         throw wrong_api_call_sequence_exception( "open(...) failed. Software device is already opened!" );
     _is_opened = true;
     set_active_streams( requests );
+    rum::hooks::on_open( get_device(), requests );
 }
 
 
@@ -224,6 +227,7 @@ void software_sensor::start( frame_callback_ptr callback )
     _source.set_sensor( this->shared_from_this() );
     _source.set_callback( callback );
     _is_streaming = true;
+    _rum_timer.restart( get_device() );
     raise_on_before_streaming_changes( true );
 }
 
@@ -233,6 +237,7 @@ void software_sensor::stop()
     if( ! _is_streaming )
         throw wrong_api_call_sequence_exception( "stop_streaming() failed. Software device is not streaming!" );
 
+    record_rum_stream_duration();  // while is_streaming() still true
     _is_streaming = false;
     raise_on_before_streaming_changes( false );
     _source.flush();

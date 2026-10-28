@@ -472,7 +472,8 @@ namespace librealsense
         _owner->_hw_monitor->send(cmd);
     }
 
-    std::string d500_safety_sensor::get_safety_interface_config(rs2_calib_location loc) const
+    std::string read_safety_interface_config( std::shared_ptr< hw_monitor_extended_buffers > const & hw_monitor,
+                                               rs2_calib_location loc )
     {
         if (loc != RS2_CALIB_LOCATION_FLASH && loc != RS2_CALIB_LOCATION_RAM)
             throw io_exception(rsutils::string::from() << "Safety Interface Config can be read only from Flash or RAM");
@@ -489,22 +490,27 @@ namespace librealsense
         cmd.require_response = true;
 
         // send command to device and get response (safety_interface_config entry + header)
-        std::vector< uint8_t > response = _owner->_hw_monitor->send(cmd);
+        std::vector< uint8_t > response = hw_monitor->send(cmd);
         if (response.size() < sizeof(safety_interface_config_with_header))
         {
             throw io_exception(rsutils::string::from() << "Safety Interface Config failed");
         }
 
-        // check CRC before returning result       
+        // check CRC before returning result
         auto computed_crc32 = rsutils::number::calc_crc32(response.data() + sizeof(table_header), sizeof(safety_interface_config));
         result = reinterpret_cast<safety_interface_config_with_header*>(response.data());
         if (computed_crc32 != result->get_table_header().get_crc32())
         {
             throw invalid_value_exception(rsutils::string::from() << "Safety Interface Config invalid CRC value");
         }
-        
+
         rsutils::json j = result->get_safety_interface_config().to_json();
         return j.dump();
+    }
+
+    std::string d500_safety_sensor::get_safety_interface_config(rs2_calib_location loc) const
+    {
+        return read_safety_interface_config(_owner->_hw_monitor, loc);
     }
 
     void d500_safety_sensor::set_safety_interface_config(const std::string& sic_json_str) const
@@ -516,7 +522,7 @@ namespace librealsense
         uint32_t computed_crc32 = rsutils::number::calc_crc32(reinterpret_cast<const uint8_t*>(&sic), sizeof(safety_interface_config));
 
         // prepare vector of data to be sent (header + safety_interface_config)
-        uint16_t version = ((uint16_t)0x04 << 8) | 0x00;  // major=0x04, minor=0x00 --> ver = major.minor
+        uint16_t version = ((uint16_t)0x04 << 8) | 0x01;  // major=0x04, minor=0x01 --> ver = major.minor
         uint32_t calib_version = 0;  // ignoring this field, as requested by sw architect
         table_header header(version, static_cast<uint16_t>(ds::d500_calibration_table_id::safety_interface_cfg_id), sizeof(safety_interface_config), calib_version, computed_crc32);
         safety_interface_config_with_header sic_with_header(header, sic);
@@ -573,7 +579,7 @@ namespace librealsense
         uint32_t computed_crc32 = rsutils::number::calc_crc32(reinterpret_cast<const uint8_t*>(&app_config), sizeof(application_config));
 
         // prepare vector of data to be sent (header + application_config)
-        uint16_t version = ((uint16_t)0x01 << 8) | 0x02;  // major=0x01, minor=0x02 --> ver = major.minor
+        uint16_t version = ((uint16_t)0x01 << 8) | 0x03;  // major=0x01, minor=0x03 --> ver = major.minor
         uint32_t calib_version = 0;  // ignoring this field, as requested by sw architect
         table_header header(version, static_cast<uint16_t>(ds::d500_calibration_table_id::app_config_table_id), sizeof(application_config), calib_version, computed_crc32);
         application_config_with_header app_config_with_header(header, app_config);

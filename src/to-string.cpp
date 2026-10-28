@@ -243,6 +243,38 @@ const char * get_string( rs2_depth_auto_exposure_mode mode )
 #undef CASE
 }
 
+const char * get_string( rs2_colored_ir_auto_exposure_mode mode )
+{
+#define CASE( X ) STRCASE( COLORED_IR_AUTO_EXPOSURE, X )
+    switch( mode )
+    {
+    CASE( AUTO )
+    CASE( DEPTH_PRIORITY )
+    CASE( COLOR_PRIORITY )
+    CASE( HYBRID )
+    default:
+        assert( ! is_valid( mode ) );
+        return UNKNOWN_VALUE;
+    }
+#undef CASE
+}
+
+const char * get_string( rs2_emitter_mode mode )
+{
+#define CASE( X ) STRCASE( EMITTER_MODE, X )
+    switch( mode )
+    {
+    CASE( OFF )
+    CASE( ON )
+    CASE( ALWAYS_ON )
+    CASE( ON_OFF )
+    default:
+        assert( ! is_valid( mode ) );
+        return UNKNOWN_VALUE;
+    }
+#undef CASE
+}
+
 const char * get_string( rs2_safety_mode mode )
 {
 #define CASE( X ) STRCASE( SAFETY_MODE, X )
@@ -417,11 +449,11 @@ const char * get_string( rs2_extension value )
     CASE( DECIMATION_EMBEDDED_FILTER )
     CASE( TEMPORAL_EMBEDDED_FILTER )
     CASE( CLOSE_RANGE_EMBEDDED_FILTER )
-    CASE( INFERENCE_FRAME )
+    CASE( PERCEPTION_FRAME )
     CASE( OBJECT_DETECTION_FRAME )
-    CASE( INFERENCE_SENSOR )
-    CASE( OBJECT_DETECTION_SENSOR )
-    CASE( INFERENCE_PROFILE )
+    CASE( PERCEPTION_SENSOR )
+    CASE( PERCEPTION_PROFILE )
+    CASE( GPU_FRAME )
     default:
         assert( ! is_valid( value ) );
         return UNKNOWN_VALUE;
@@ -580,6 +612,11 @@ std::string const & get_string_( rs2_option value )
         CASE( THRESHOLD )
         CASE( DOWNSCALE_RATIO )
         CASE( READOUT_SHAPING )
+        CASE( DETECTION_DISTANCE )
+        CASE( SENSORS_CONFIG_MODE )
+        CASE( DUAL_RGB_RECTIFICATION )
+        CASE( EMITTER_MODE )
+        CASE( ENABLE_ALIGNED_DEPTH )
 #undef CASE
         return arr;
     }();
@@ -605,6 +642,27 @@ const char * get_string( rs2_eth_link_priority value )
     }
 #undef CASE
 }
+
+// rs2_composite_option_id: a separate id space from rs2_option - a plain static name array, no
+// options_registry involvement (no dynamic per-device custom-name registration, unlike
+// rs2_option below). std::string const& return type mirrors rs2_option_type's get_string().
+std::string const & get_string( rs2_composite_option_id value )
+{
+    static auto str_array = []()
+    {
+        std::vector< std::string > arr( RS2_COMPOSITE_OPTION_COUNT );
+#define CASE( X ) STRARR( arr, COMPOSITE_OPTION, X );
+        CASE( DECIMATION_FILTER_DPP )
+        CASE( TEMPORAL_FILTER_DPP )
+        CASE( HDRD_CONTROL )
+#undef CASE
+        return arr;
+    }();
+    if( ! is_valid( value ) )
+        return unknown_value_str;
+    return str_array[value];
+}
+
 
 std::string const & get_string( rs2_option const option )
 {
@@ -683,6 +741,7 @@ const char * get_string( rs2_format value )
     CASE( Y16I )
     CASE( M420 )
     CASE( NV12 )
+    CASE( H264 )
     default:
         assert( ! is_valid( value ) );
         return UNKNOWN_VALUE;
@@ -1035,6 +1094,8 @@ const char * rs2_calibration_status_to_string( rs2_calibration_status status ) {
 const char * rs2_host_perf_mode_to_string( rs2_host_perf_mode mode ) { return librealsense::get_string( mode ); }
 const char * rs2_emitter_frequency_mode_to_string( rs2_emitter_frequency_mode mode ) { return librealsense::get_string( mode ); }
 const char * rs2_depth_auto_exposure_mode_to_string( rs2_depth_auto_exposure_mode mode ) { return librealsense::get_string( mode ); }
+const char * rs2_colored_ir_auto_exposure_mode_to_string( rs2_colored_ir_auto_exposure_mode mode ) { return librealsense::get_string( mode ); }
+const char * rs2_emitter_mode_to_string( rs2_emitter_mode mode ) { return librealsense::get_string( mode ); }
 const char * rs2_safety_mode_to_string( rs2_safety_mode mode ) { return librealsense::get_string( mode ); }
 const char * rs2_d500_intercam_sync_mode_to_string( rs2_d500_intercam_sync_mode mode ) { return librealsense::get_string( mode ); }
 const char * rs2_point_cloud_label_to_string(rs2_point_cloud_label label) { return librealsense::get_string(label); }
@@ -1042,3 +1103,4 @@ const char * rs2_calib_location_to_string(rs2_calib_location calib_location) { r
 const char * rs2_embedded_filter_type_to_string(rs2_embedded_filter_type embedded_filter_type) { return librealsense::get_string(embedded_filter_type); }
 const char * rs2_gyro_sensitivity_to_string( rs2_gyro_sensitivity mode ){return librealsense::get_string( mode );}
 const char * rs2_eth_link_priority_to_string( rs2_eth_link_priority priority ){return librealsense::get_string( priority );}
+const char * rs2_composite_option_id_to_string( rs2_composite_option_id id ) { return librealsense::get_string( id ).c_str(); }

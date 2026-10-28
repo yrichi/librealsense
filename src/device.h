@@ -92,11 +92,11 @@ public:
 
     format_conversion get_format_conversion() const;
 
-    // Inference and some embedded filters cannot run at the same time. These functions help reject the conflicting combination.
-    bool is_inference_active() const;
-    bool is_inference_blocking_filter_enabled() const;
-    void throw_if_inference_active() const;
-    void throw_if_inference_blocking_filter_enabled() const;
+    // Perception and some embedded filters cannot run at the same time. These functions help reject the conflicting combination.
+    bool is_perception_active() const;
+    bool is_perception_blocking_filter_enabled() const;
+    void throw_if_perception_active() const;
+    void throw_if_perception_blocking_filter_enabled() const;
 
 protected:
     int add_sensor(const std::shared_ptr<sensor_interface>& sensor_base);
@@ -108,10 +108,14 @@ protected:
 
     std::map<int, std::pair<uint32_t, std::shared_ptr<const stream_interface>>> _extrinsics;
 
+    // Cleared when the device is disconnected; a derived destructor also clears it so
+    // its background loops stop before they are joined. Shared so those loops can hold
+    // a weak_ptr and survive any destruction order.
+    std::shared_ptr< std::atomic< bool > > _is_alive;
+
 private:
     std::vector<std::shared_ptr<sensor_interface>> _sensors;
     std::shared_ptr< const device_info > _dev_info;
-    std::shared_ptr< std::atomic< bool > > _is_alive;
     rsutils::subscription _device_change_subscription;
     rsutils::lazy< std::vector< tagged_profile > > _profiles_tags;
     rsutils::lazy< format_conversion > _format_conversion;

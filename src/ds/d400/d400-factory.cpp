@@ -97,6 +97,21 @@ namespace librealsense
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
 
+        // D401 GMSL dual-RGB + depth coexistence (FW 5.17.3.151+): the two COLOR streams come from
+        // independent EP imagers (1288x808), decoupled from depth/IR (e.g. 1280x720). COLOR must NOT
+        // contradict another stream on resolution, else depth+color can't be requested together (the
+        // base rule rejects any width/height mismatch). Depth/IR still cross-check among themselves.
+        bool contradicts( const stream_profile_interface * a, const std::vector< stream_profile > & others ) const override
+        {
+            if( a->get_stream_type() == RS2_STREAM_COLOR )
+                return false;
+            std::vector< stream_profile > non_color;
+            for( auto & sp : others )
+                if( sp.stream != RS2_STREAM_COLOR )
+                    non_color.push_back( sp );
+            return device::contradicts( a, non_color );
+        }
+
         std::vector<tagged_profile> get_profiles_tags() const override
         {
             std::vector<tagged_profile> tags;
@@ -107,8 +122,11 @@ namespace librealsense
             int color_height = 480;
             int fps = 30;
 
+            // Default only Color 0 (index 0). In raw dual-RGB mode Color 1 (index 1) also
+            // advertises RGB8; an index -1 wildcard would default-enable both, and Color 1
+            // shares a HW endpoint with IR2 so the default pipeline could not resolve.
             tags.push_back( { RS2_STREAM_COLOR,
-                              -1,  // index
+                              0,  // index
                               color_width,
                               color_height,
                               get_color_format(),
@@ -720,7 +738,8 @@ namespace librealsense
                          public d400_color,
                          public d400_motion_uvc,
                          public d400_mipi_device,
-                         public firmware_logger_device
+                         public firmware_logger_device,
+                         public ds_thermal_tracking
     {
     public:
         rs457_device( std::shared_ptr< const d400_info > const & dev_info, bool register_device_notifications )
@@ -732,8 +751,8 @@ namespace librealsense
             , d400_motion_uvc( dev_info )
             , d400_mipi_device()
             , firmware_logger_device( dev_info, d400_device::_hw_monitor, get_firmware_logs_command(), get_flash_logs_command() )
+            , ds_thermal_tracking( d400_device::_thermal_monitor )
         {
-            store_sensors_indices({_depth_device_idx,_color_device_idx, _motion_module_device_idx});
         }
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
@@ -1253,6 +1272,10 @@ namespace librealsense
     std::shared_ptr<matcher> rs401_gmsl_device::create_matcher(const frame_holder& frame) const
     {
         std::vector<stream_interface*> streams = { _depth_stream.get() , _left_ir_stream.get() , _right_ir_stream.get(), _color_stream.get() };
+        // D401 GMSL dual-RGB: the second color stream (right imager) must be known to the syncer,
+        // otherwise its frames have no matcher -> create_matcher recurses -> stack/heap corruption.
+        if( _color_stream2 )
+            streams.push_back( _color_stream2.get() );
         return matcher_factory::create(RS2_MATCHER_DEFAULT, streams);
     }
 

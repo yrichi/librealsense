@@ -88,6 +88,19 @@ namespace rs2
         config_file::instance().set_default(configurations::viewer::commands_xml, "./Commands.xml");
         config_file::instance().set_default(configurations::viewer::hwlogger_xml, "./HWLoggerEvents.xml");
 
+        {
+            // set_nested_default() only writes a key if it's missing, so this is safe to run
+            // unconditionally - it backfills the grid keys into pre-existing config files too.
+            namespace cfg = configurations::viewer::viewport_grid_overlay;
+            auto& cf = config_file::instance();
+            cf.set_nested_default( cfg::horizontal_lines, 1   );
+            cf.set_nested_default( cfg::vertical_lines,   1   );
+            cf.set_nested_default( cfg::line_width,       1   );
+            cf.set_nested_default( cfg::line_color_r,     255 );
+            cf.set_nested_default( cfg::line_color_g,     255 );
+            cf.set_nested_default( cfg::line_color_b,     255 );
+        }
+
         std::string path;
         try
         {
@@ -269,6 +282,14 @@ namespace rs2
 
             prepare_config_file();
 
+#ifdef __APPLE__
+            if( ! GLAD_GL_VERSION_3_0 )
+            {
+                config_file::instance().set( configurations::performance::glsl_for_processing, false );
+                config_file::instance().set( configurations::performance::glsl_for_rendering, false );
+            }
+#endif
+
             glfwDestroyWindow(ctx);
         }
 
@@ -401,13 +422,17 @@ namespace rs2
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
         io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;   // added in order to prevents cursor chang when interacting with other element (when nedded remove the flag accordingly)
         ImGui_ImplGlfw_InitForOpenGL(_win, true);
+#ifdef __APPLE__
+        ImGui_ImplOpenGL3_Init( "#version 120" );
+#else
         ImGui_ImplOpenGL3_Init();
+#endif
 
         if (_use_glsl_render)
             _2d_vis = std::make_shared<visualizer_2d>(std::make_shared<splash_screen_shader>());
 
         // Load fonts to be used with the ImGui - TODO move to RAII
-        imgui_easy_theming(_font_dynamic, _font_18, _monofont, font_size);
+        imgui_easy_theming(_font_dynamic, _font_18, _monofont, _font_bold, font_size);
 
         // Register for UI-controller events
         glfwSetCursorPosCallback(_win, [](GLFWwindow* w, double cx, double cy)
@@ -464,7 +489,7 @@ namespace rs2
 
     ux_window::ux_window(const char* title, context &ctx) :
         _win(nullptr), _width(0), _height(0), _output_height(0),
-        _font_dynamic(nullptr), _font_18(nullptr), _monofont(nullptr), font_size(16), _app_ready(false),
+        _font_dynamic(nullptr), _font_18(nullptr), _monofont(nullptr), _font_bold(nullptr), font_size(16), _app_ready(false),
         _first_frame(true), _query_devices(true), _missing_device(false),
         _hourglass_index(0), _dev_stat_message{}, _keep_alive(true), _title(title), _ctx(ctx)
     {

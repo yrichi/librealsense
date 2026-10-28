@@ -86,6 +86,8 @@ if(BUILD_WITH_L500)
     add_l500()
 endif()
 
+hide_bundled_archive_symbols( fastcdr fastrtps foonathan_memory realdds realsense-file rs_lz4 sqlite3_lib )
+
 # configure the project according to OS specific requirments
 # macro definition located at "CMake/<OS>_config.cmake"
 os_target_config()

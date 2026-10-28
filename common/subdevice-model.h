@@ -46,6 +46,9 @@ namespace rs2
 
     std::string get_post_processing_device_sensor_name(subdevice_model* sub);
 
+    // True for D500 devices with a wired-up depth-mapping sensor (occupancy grid / labeled point cloud).
+    bool device_has_depth_mapping(const device& dev);
+
     class frame_queues
     {
     public:
@@ -110,7 +113,6 @@ namespace rs2
         void draw_options(const std::vector<rs2_option>& drawing_order,
             bool update_read_only_options, std::string& error_message,
             notifications_model& model);
-        uint64_t num_supported_non_default_options() const;
         bool draw_option(rs2_option opt, bool update_read_only_options,
             std::string& error_message, notifications_model& model)
         {
@@ -173,6 +175,7 @@ namespace rs2
         std::shared_ptr< atomic_objects_in_frame > detected_objects;
 
         std::map< rs2_option, option_model > options_metadata;
+        std::string options_filter;  // live search text filtering the Controls option list by name
         std::vector<std::string> resolutions;
         std::map<int, std::vector<std::string>> fpses_per_stream;
         std::vector<std::string> shared_fpses;
@@ -209,7 +212,6 @@ namespace rs2
         rect normalized_zoom{ 0, 0, 1, 1 };
         rect roi_rect;
         bool auto_exposure_enabled = false;
-        float depth_units = 1.f;
         float stereo_baseline = -1.f;
 
         bool roi_checked = false;
@@ -237,6 +239,15 @@ namespace rs2
 
         std::vector<std::shared_ptr<embedded_filter_model>> embedded_filters;
         bool embedded_filters_enabled = true;
+
+        // UI state for the Temporal Filter DPP "structured API" panel (gated on
+        // RS2_COMPOSITE_OPTION_TEMPORAL_FILTER_DPP support - see device-model.cpp). Widget
+        // values change locally until "Apply" issues one atomic set_composite_option() call.
+        bool temporal_filter_dpp_populated = false;
+        int temporal_filter_dpp_enabled = 0;
+        float temporal_filter_dpp_smooth_alpha = 0.4f;
+        int temporal_filter_dpp_smooth_delta = 20;
+        int temporal_filter_dpp_persistency_index = 3;
 
         bool uvmapping_calib_full = false;
         device_model* dev_model;
@@ -276,6 +287,33 @@ namespace rs2
         std::pair<int, int> get_max_resolution(rs2_stream stream) const;
         void sort_resolutions(std::vector<std::pair<int, int>>& resolutions) const;
         bool is_ir_calibration_profile() const;
+        // True when this subdevice exposes the dual-RGB configuration (two color streams alongside
+        // the stereo IR streams). On the D401 GMSL the two imagers each stream mono IR (Y8) OR Bayer
+        // color (BA81) - not both - so color and infrared are mutually exclusive on the imager nodes;
+        // depth is a separate node and coexists with either group.
+        bool is_dual_color_subdevice() const;
+        // The D401 GMSL streams in exactly ONE mode at a time, selected by the color format:
+        //   RAW / dual-RGB : a color stream in RS2_FORMAT_RGB8 (BA81 -> rggb). Both imagers are
+        //                    Bayer, so mono IR is unavailable and the raw-only 2nd color pin (Color 1)
+        //                    is available.
+        //   ISP / stereo   : color in YUYV/BGR8/RGBA8/BGRA8 (FW-processed). Coexists with IR1/IR2;
+        //                    the raw-only Color 1 is unavailable.
+        // Depth is a separate node and coexists with either mode.
+        rs2_stream stream_type_of(int unique_id) const;   // profile stream type for a unique id (ANY if not found)
+        int        stream_index_of(int unique_id) const;  // profile stream index for a unique id (0 if not found)
+        bool color_uid_is_raw(int unique_id) const;   // this color uid's selected format is RGB8
+        // Raw dual-RGB mode is active iff the second color stream (Color 1, index >= 1) is enabled. A lone
+        // Color 0 (any format, including RGB8) is ISP color and coexists with infrared.
+        bool dual_rgb_active() const;
+        // Reconcile the single-mode invariant after `changed_unique_id` toggled or changed format:
+        // uncheck streams that can't coexist with it and couple the two color pins to the same format.
+        void enforce_dual_color_ir_exclusion(int changed_unique_id);
+        // True when `unique_id`'s checkbox should be greyed out given the current mode (IR while raw
+        // dual-RGB is active; the raw-only Color 1 while IR is active).
+        bool is_stream_mode_locked(int unique_id) const;
+        // The device publishes a separate aligned-depth stream (DDS) only while the mode is on, so its
+        // checkbox stays disabled until then. False for devices that carry aligned depth on one stream.
+        bool is_aligned_depth_stream_off(int unique_id) const;
         void set_extrinsics_from_depth_if_needed();
         bool is_post_processing_enabled_in_config_file() const;
         void avoid_streaming_on_embedded_filters_not_matching_configuration() const;

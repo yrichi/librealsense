@@ -8,6 +8,42 @@
 
 namespace librealsense
 {
+    namespace
+    {
+        struct gyro_sensitivity_entry
+        {
+            rs2_gyro_sensitivity value;
+            double full_scale_dps;
+            const char * description;
+        };
+
+        constexpr gyro_sensitivity_entry gyro_sensitivity_values[] = {
+            { RS2_GYRO_SENSITIVITY_61_0_MILLI_DEG_SEC, 2000., "61.0 mDeg/Sec" },
+            { RS2_GYRO_SENSITIVITY_30_5_MILLI_DEG_SEC, 1000., "30.5 mDeg/Sec" },
+            { RS2_GYRO_SENSITIVITY_15_3_MILLI_DEG_SEC, 500., "15.3 mDeg/Sec" },
+            { RS2_GYRO_SENSITIVITY_7_6_MILLI_DEG_SEC, 250., "7.6 mDeg/Sec" },
+            { RS2_GYRO_SENSITIVITY_3_8_MILLI_DEG_SEC, 125., "3.8 mDeg/Sec" },
+        };
+
+        const gyro_sensitivity_entry & get_gyro_sensitivity_entry( float value )
+        {
+            for( auto const & entry : gyro_sensitivity_values )
+                if( value == entry.value )
+                    return entry;
+            throw invalid_value_exception( "Invalid gyro sensitivity value" );
+        }
+    }
+
+    double gyro_sensitivity_to_scale( float value )
+    {
+        return get_gyro_sensitivity_entry( value ).full_scale_dps / 32768.;
+    }
+
+    const char * get_gyro_sensitivity_value_description( float value )
+    {
+        return get_gyro_sensitivity_entry( value ).description;
+    }
+
     const char* emitter_option::get_value_description(float val) const
     {
         switch (static_cast<int>(val))
@@ -517,8 +553,8 @@ namespace librealsense
             return "Inter-camera synchronization mode: 0:Default, 1:Master, 2:Slave";
     }
 
-    alternating_emitter_option::alternating_emitter_option(hw_monitor& hwm, bool is_fw_version_using_id, hwmon_response_type no_data_to_return_opcode)
-        : _hwm(hwm), _is_fw_version_using_id(is_fw_version_using_id), _no_data_to_return_opcode(no_data_to_return_opcode)
+    alternating_emitter_option::alternating_emitter_option(hw_monitor& hwm, bool is_fw_version_using_id, bool expect_no_data_to_return, hwmon_response_type no_data_to_return_opcode)
+        : _hwm(hwm), _is_fw_version_using_id(is_fw_version_using_id), _expect_no_data_to_return(expect_no_data_to_return), _no_data_to_return_opcode(no_data_to_return_opcode)
     {
         _range = [this]()
         {
@@ -554,7 +590,8 @@ namespace librealsense
             {
                 hwmon_response_type response;
                 auto res = _hwm.send( cmd, &response );  // avoid the throw
-                if (response != _no_data_to_return_opcode) // If no subpreset is streaming, the firmware returns "NO_DATA_TO_RETURN" error
+                // when the FW returns a no-data code for an idle subpreset, skip it; otherwise there is always data to read
+                if (!_expect_no_data_to_return || response != _no_data_to_return_opcode)
                 {
                     // if a subpreset is streaming, checking this is the alternating emitter sub preset
                     if( res.size() )
@@ -581,7 +618,7 @@ namespace librealsense
         }
     }
 
-    emitter_always_on_option::emitter_always_on_option( std::shared_ptr<hw_monitor> hwm, ds::fw_cmd _hmc_get_opcode, ds::fw_cmd _hmc_set_opcode )
+    emitter_always_on_option::emitter_always_on_option( std::shared_ptr<hw_monitor> hwm, uint8_t _hmc_get_opcode, uint8_t _hmc_set_opcode )
         : _hwm(hwm), _hmc_get_opcode(_hmc_get_opcode), _hmc_set_opcode(_hmc_set_opcode)
     {
         // On d400 option, We use the same opcode both for set and get.
@@ -759,7 +796,7 @@ namespace librealsense
 
     void thermal_compensation::set(float value)
     {
-        if (value < 0)
+        if (value != 0 && value != 1)
             throw invalid_value_exception("Invalid input for thermal compensation toggle: " + std::to_string(value));
 
         _thermal_toggle->set(value);

@@ -13,6 +13,23 @@ import pyrealsense2 as rs
 WIDTH = 1280
 HEIGHT = 720
 
+# Standard resolution/fps sweep shared across the image-quality tests: a single
+# representative config for regular CI, extended to a broader sweep under nightly.
+# Centralized here so every IQ test uses the same set instead of each hand-maintaining
+# its own copy.
+DEFAULT_CONFIGURATIONS = [((1280, 720), 30)]
+NIGHTLY_CONFIGURATIONS = [
+    ((640, 480), 15),
+    ((640, 480), 30),
+    ((640, 480), 60),
+    ((848, 480), 15),
+    ((848, 480), 30),
+    ((848, 480), 60),
+    ((1280, 720), 5),
+    ((1280, 720), 10),
+    ((1280, 720), 15),
+]
+
 # transformation matrix from frame to aligned region of interest
 M = None
 
@@ -229,6 +246,7 @@ def make_depth_filter_chain():
 #        hue is undefined and HSV S is dominated by sensor noise.
 TOLERANCE = {'hue': 10, 'sat': 70, 'val': 70, 'rgb': 70}
 ACHROMATIC_S = 40       # expected S below this → treat as gray/white/black
+ACHROMATIC_V = 50       # too dark for hue to mean anything - compare per-channel instead
 
 
 def is_color_close(actual, expected):
@@ -237,7 +255,7 @@ def is_color_close(actual, expected):
         cv2.cvtColor(np.uint8([[[expected[2], expected[1], expected[0]]]]), cv2.COLOR_BGR2HSV)[0, 0])
 
     # Gray/black/white have no real hue, so compare RGB directly instead of HSV.
-    if expected_s < ACHROMATIC_S:
+    if expected_s < ACHROMATIC_S or expected_v < ACHROMATIC_V:
         r_diff = abs(actual[0] - expected[0])
         g_diff = abs(actual[1] - expected[1])
         b_diff = abs(actual[2] - expected[2])

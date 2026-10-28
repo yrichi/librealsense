@@ -6,7 +6,7 @@
 #include "core/stream-profile-interface.h"
 #include "core/video.h"
 #include "core/motion.h"
-#include "core/inference.h"
+#include "core/perception.h"
 #include "core/stream-profile.h"
 #include "core/tagged-profile.h"
 #include "librealsense-exception.h"
@@ -94,6 +94,10 @@ namespace librealsense
         void create_snapshot(std::shared_ptr<stream_profile_interface>& snapshot) const override;
         void enable_recording(std::function<void(const stream_profile_interface&)> record_action) override;
 
+    protected:
+        // clone() lives in the derived classes and has to carry the name over
+        std::string const & name() const { return _name; }
+
     private:
         int _index = 1;
         int _uid = 0;
@@ -142,6 +146,7 @@ namespace librealsense
             std::function<rs2_intrinsics()> int_func = _calc_intrinsics;
             res->set_intrinsics([int_func]() { return int_func(); });
             res->set_framerate(get_framerate());
+            res->set_name( name() );
             environment::get_instance().get_extrinsics_graph().register_same_extrinsics(*res, *this);
             return res;
         }
@@ -193,6 +198,7 @@ namespace librealsense
             std::function<rs2_motion_device_intrinsic()> init_func = _calc_intrinsics;
             res->set_intrinsics([init_func]() { return init_func(); });
             res->set_framerate(get_framerate());
+            res->set_name( name() );
             environment::get_instance().get_extrinsics_graph().register_same_extrinsics(*res, *this);
             return res;
         }
@@ -215,15 +221,16 @@ namespace librealsense
             auto res = std::make_shared< pose_stream_profile >();
             res->set_unique_id( environment::get_instance().generate_stream_id() );
             res->set_framerate( get_framerate() );
+            res->set_name( name() );
             return res;
         }
 
     };
 
-    class inference_stream_profile : public inference_stream_profile_interface, public stream_profile_base, public extension_snapshot
+    class perception_stream_profile : public perception_stream_profile_interface, public stream_profile_base, public extension_snapshot
     {
     public:
-        explicit inference_stream_profile()
+        explicit perception_stream_profile()
         {
         }
 
@@ -231,9 +238,10 @@ namespace librealsense
 
         std::shared_ptr< stream_profile_interface > clone() const override
         {
-            auto res = std::make_shared< inference_stream_profile >();
+            auto res = std::make_shared< perception_stream_profile >();
             res->set_unique_id( environment::get_instance().generate_stream_id() );
             res->set_framerate( get_framerate() );
+            res->set_name( name() );
             return res;
         }
     };
