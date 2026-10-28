@@ -3,6 +3,7 @@
 #pragma once
 
 #include "core/option-interface.h"
+#include "core/enum-helpers.h"  // enum_option<T>::get_string must be visible at definition (two-phase lookup)
 #include "librealsense-exception.h"
 
 #include <rsutils/string/from.h>

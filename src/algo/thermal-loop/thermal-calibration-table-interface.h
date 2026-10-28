@@ -4,8 +4,10 @@
 #pragma once
 
 #include <vector>
+#include <cstdint>
 
 namespace librealsense {
+typedef uint8_t byte;  // see l500-private.h
 namespace algo {
 namespace thermal_loop {
 

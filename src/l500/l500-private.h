@@ -20,6 +20,7 @@
 #include "../fw-update/fw-update-unsigned.h"
 
 #include <rsutils/string/from.h>
+#include <rsutils/number/crc32.h>
 
 
 static const int MAX_NUM_OF_RGB_RESOLUTIONS = 5;
@@ -27,6 +28,8 @@ static const int MAX_NUM_OF_DEPTH_RESOLUTIONS = 5;
 
 namespace librealsense
 {
+    typedef uint8_t byte;  // librealsense::byte was removed upstream; MSVC got it from windows.h
+
     const uint16_t L500_RECOVERY_PID            = 0x0b55;
     const uint16_t L500_USB2_RECOVERY_PID_OLD   = 0x0adc; // Units with old DFU_PAYLAOD on USB2 report ds5 PID (RS_USB2_RECOVERY_PID)
     const uint16_t L500_PID                     = 0x0b0d;
@@ -102,6 +105,97 @@ namespace librealsense
         };
 #pragma pack(pop)
 
+        // The free hwmon_response enum in src/hw-monitor.h was replaced by a per-product-line
+        // hwmon_response_interface. This re-homes L500's values behind that interface,
+        // keeping the original hwm_* spellings so call sites are unchanged.
+        // Template: ds::d400_hwmon_response in src/ds/d400/d400-private.h.
+        class l500_hwmon_response : public hwmon_response_interface
+        {
+        public:
+            enum opcodes : hwmon_response_type
+            {
+                hwm_Success                         =  0,
+                hwm_WrongCommand                    = -1,
+                hwm_StartNGEndAddr                  = -2,
+                hwm_AddressSpaceNotAligned          = -3,
+                hwm_AddressSpaceTooSmall            = -4,
+                hwm_ReadOnly                        = -5,
+                hwm_WrongParameter                  = -6,
+                hwm_HWNotReady                      = -7,
+                hwm_I2CAccessFailed                 = -8,
+                hwm_NoExpectedUserAction            = -9,
+                hwm_IntegrityError                  = -10,
+                hwm_NullOrZeroSizeString            = -11,
+                hwm_GPIOPinNumberInvalid            = -12,
+                hwm_GPIOPinDirectionInvalid         = -13,
+                hwm_IllegalAddress                  = -14,
+                hwm_IllegalSize                     = -15,
+                hwm_ParamsTableNotValid             = -16,
+                hwm_ParamsTableIdNotValid           = -17,
+                hwm_ParamsTableWrongExistingSize    = -18,
+                hwm_WrongCRC                        = -19,
+                hwm_NotAuthorisedFlashWrite         = -20,
+                hwm_NoDataToReturn                  = -21,
+                hwm_SpiReadFailed                   = -22,
+                hwm_SpiWriteFailed                  = -23,
+                hwm_SpiEraseSectorFailed            = -24,
+                hwm_TableIsEmpty                    = -25,
+                hwm_I2cSeqDelay                     = -26,
+                hwm_CommandIsLocked                 = -27,
+                hwm_CalibrationWrongTableId         = -28,
+                hwm_ValueOutOfRange                 = -29,
+                hwm_InvalidDepthFormat              = -30,
+                hwm_DepthFlowError                  = -31,
+                hwm_Timeout                         = -32,
+                hwm_NotSafeCheckFailed              = -33,
+                hwm_FlashRegionIsLocked             = -34,
+                hwm_SummingEventTimeout             = -35,
+                hwm_SDSCorrupted                    = -36,
+                hwm_SDSVerifyFailed                 = -37,
+                hwm_IllegalHwState                  = -38,
+                hwm_RealtekNotLoaded                = -39,
+                hwm_WakeUpDeviceNotSupported        = -40,
+                hwm_ResourceBusy                    = -41,
+                hwm_MaxErrorValue                   = -42,
+                hwm_PwmNotSupported                 = -43,
+                hwm_PwmStereoModuleNotConnected     = -44,
+                hwm_UvcStreamInvalidStreamRequest   = -45,
+                hwm_UvcControlManualExposureInvalid = -46,
+                hwm_UvcControlManualGainInvalid     = -47,
+                hwm_EyesafetyPayloadFailure         = -48,
+                hwm_ProjectorTestFailed             = -49,
+                hwm_ThreadModifyFailed              = -50,
+                hwm_HotLaserPwrReduce               = -51, // reported to error depth XU control
+                hwm_HotLaserDisable                 = -52, // reported to error depth XU control
+                hwm_FlagBLaserDisable               = -53, // reported to error depth XU control
+                hwm_NoStateChange                   = -54,
+                hwm_EEPROMIsLocked                  = -55,
+                hwm_OEMIdWrong                      = -56,
+                hwm_RealtekNotUpdated               = -57,
+                hwm_FunctionNotSupported            = -58,
+                hwm_IspNotImplemented               = -59,
+                hwm_IspNotSupported                 = -60,
+                hwm_IspNotPermited                  = -61,
+                hwm_IspNotExists                    = -62,
+                hwm_IspFail                         = -63,
+                hwm_Unknown                         = -64,
+                hwm_LastError                       = hwm_Unknown - 1,
+            };
+
+            hwmon_response_type success_value() const override { return hwm_Success; }
+
+            std::string hwmon_error2str( int e ) const override
+            {
+                auto it = _report.find( static_cast< opcodes >( e ) );
+                if( it != _report.end() )
+                    return it->second;
+                return rsutils::string::from() << "HW Monitor error (" << e << ")";
+            }
+
+        private:
+            static const std::map< opcodes, std::string > _report;
+        };
+
         static std::vector< byte >
         read_fw_table_raw( const hw_monitor & hwm, int table_id, hwmon_response_type & response )
         {
@@ -127,7 +221,7 @@ namespace librealsense
             size_t expected_size = sizeof( table_header ) + sizeof( T );
             switch( response )
             {
-            case hwm_Success:
+            case l500_hwmon_response::hwm_Success:
                 if( data.size() != expected_size )
                     throw std::runtime_error( rsutils::string::from()
                                               << "READ_TABLE (0x" << std::hex << table_id
@@ -139,7 +233,7 @@ namespace librealsense
                     *ptable = *(T *)(data.data() + sizeof( table_header ));
                 break;
 
-            case hwm_TableIsEmpty:
+            case l500_hwmon_response::hwm_TableIsEmpty:
                 if( init )
                 {
                     // Initialize a new table
@@ -151,7 +245,7 @@ namespace librealsense
             default:
                 LOG_DEBUG( "Failed to read FW table 0x" << std::hex << table_id );
                 command cmd( fw_cmd::READ_TABLE, table_id );
-                throw invalid_value_exception( hwmon_error_string( cmd, response ) );
+                throw invalid_value_exception( hwm.hwmon_error_string( cmd, response ) );
             }
         }
 
@@ -168,7 +262,7 @@ namespace librealsense
             h->table_id = table_id;
             h->table_size = sizeof( T );
             h->reserved = 0xFFFFFFFF;
-            h->crc32 = calc_crc32( (byte *)&table, sizeof( table ) );
+            h->crc32 = rsutils::number::calc_crc32( (byte *)&table, sizeof( table ) );
 
             memcpy( cmd.data.data() + sizeof( table_header ), &table, sizeof( table ) );
             
@@ -176,12 +270,12 @@ namespace librealsense
             hwm.send( cmd, &response );
             switch( response )
             {
-            case hwm_Success:
+            case l500_hwmon_response::hwm_Success:
                 break;
 
             default:
                 LOG_DEBUG( "Failed to write FW table 0x" << std::hex << table_id << " " << sizeof( table ) << " bytes: " );
-                throw invalid_value_exception( rsutils::string::from() << "Failed to write FW table 0x" << std::hex << table_id << ": " << hwmon_error_string( cmd, response ));
+                throw invalid_value_exception( rsutils::string::from() << "Failed to write FW table 0x" << std::hex << table_id << ": " << hwm.hwmon_error_string( cmd, response ));
             }
         }
 
@@ -480,96 +574,6 @@ namespace librealsense
 
 
 
-        // The free hwmon_response enum in src/hw-monitor.h was replaced by a per-product-line
-        // hwmon_response_interface. This re-homes L500's values behind that interface,
-        // keeping the original hwm_* spellings so call sites are unchanged.
-        // Template: ds::d400_hwmon_response in src/ds/d400/d400-private.h.
-        class l500_hwmon_response : public hwmon_response_interface
-        {
-        public:
-            enum opcodes : hwmon_response_type
-            {
-                hwm_Success                         =  0,
-                hwm_WrongCommand                    = -1,
-                hwm_StartNGEndAddr                  = -2,
-                hwm_AddressSpaceNotAligned          = -3,
-                hwm_AddressSpaceTooSmall            = -4,
-                hwm_ReadOnly                        = -5,
-                hwm_WrongParameter                  = -6,
-                hwm_HWNotReady                      = -7,
-                hwm_I2CAccessFailed                 = -8,
-                hwm_NoExpectedUserAction            = -9,
-                hwm_IntegrityError                  = -10,
-                hwm_NullOrZeroSizeString            = -11,
-                hwm_GPIOPinNumberInvalid            = -12,
-                hwm_GPIOPinDirectionInvalid         = -13,
-                hwm_IllegalAddress                  = -14,
-                hwm_IllegalSize                     = -15,
-                hwm_ParamsTableNotValid             = -16,
-                hwm_ParamsTableIdNotValid           = -17,
-                hwm_ParamsTableWrongExistingSize    = -18,
-                hwm_WrongCRC                        = -19,
-                hwm_NotAuthorisedFlashWrite         = -20,
-                hwm_NoDataToReturn                  = -21,
-                hwm_SpiReadFailed                   = -22,
-                hwm_SpiWriteFailed                  = -23,
-                hwm_SpiEraseSectorFailed            = -24,
-                hwm_TableIsEmpty                    = -25,
-                hwm_I2cSeqDelay                     = -26,
-                hwm_CommandIsLocked                 = -27,
-                hwm_CalibrationWrongTableId         = -28,
-                hwm_ValueOutOfRange                 = -29,
-                hwm_InvalidDepthFormat              = -30,
-                hwm_DepthFlowError                  = -31,
-                hwm_Timeout                         = -32,
-                hwm_NotSafeCheckFailed              = -33,
-                hwm_FlashRegionIsLocked             = -34,
-                hwm_SummingEventTimeout             = -35,
-                hwm_SDSCorrupted                    = -36,
-                hwm_SDSVerifyFailed                 = -37,
-                hwm_IllegalHwState                  = -38,
-                hwm_RealtekNotLoaded                = -39,
-                hwm_WakeUpDeviceNotSupported        = -40,
-                hwm_ResourceBusy                    = -41,
-                hwm_MaxErrorValue                   = -42,
-                hwm_PwmNotSupported                 = -43,
-                hwm_PwmStereoModuleNotConnected     = -44,
-                hwm_UvcStreamInvalidStreamRequest   = -45,
-                hwm_UvcControlManualExposureInvalid = -46,
-                hwm_UvcControlManualGainInvalid     = -47,
-                hwm_EyesafetyPayloadFailure         = -48,
-                hwm_ProjectorTestFailed             = -49,
-                hwm_ThreadModifyFailed              = -50,
-                hwm_HotLaserPwrReduce               = -51, // reported to error depth XU control
-                hwm_HotLaserDisable                 = -52, // reported to error depth XU control
-                hwm_FlagBLaserDisable               = -53, // reported to error depth XU control
-                hwm_NoStateChange                   = -54,
-                hwm_EEPROMIsLocked                  = -55,
-                hwm_OEMIdWrong                      = -56,
-                hwm_RealtekNotUpdated               = -57,
-                hwm_FunctionNotSupported            = -58,
-                hwm_IspNotImplemented               = -59,
-                hwm_IspNotSupported                 = -60,
-                hwm_IspNotPermited                  = -61,
-                hwm_IspNotExists                    = -62,
-                hwm_IspFail                         = -63,
-                hwm_Unknown                         = -64,
-                hwm_LastError                       = hwm_Unknown - 1,
-            };
-
-            hwmon_response_type success_value() const override { return hwm_Success; }
-
-            std::string hwmon_error2str( int e ) const override
-            {
-                auto it = _report.find( static_cast< opcodes >( e ) );
-                if( it != _report.end() )
-                    return it->second;
-                return rsutils::string::from() << "HW Monitor error (" << e << ")";
-            }
-
-        private:
-            static const std::map< opcodes, std::string > _report;
-        };
 
 
         // Was a free function in src/image.h taking/returning a `resolution`; the transform is
