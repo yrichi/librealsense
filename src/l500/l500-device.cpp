@@ -175,7 +175,10 @@ namespace librealsense
 
         std::vector<std::shared_ptr<platform::uvc_device>> depth_devices;
         for( auto&& info : filter_by_mi( all_device_infos, 0 ) ) // Filter just mi=0, DEPTH
-            depth_devices.push_back( backend->create_uvc_device( info ) );
+            if( auto dev = backend->create_uvc_device( info ) )  // RSUSB returns null when the interface cannot be claimed
+                depth_devices.push_back( dev );
+        if( depth_devices.empty() )  // same guard as d400_device::create_depth_device
+            throw backend_exception( "cannot access depth sensor" );
 
         std::unique_ptr<frame_timestamp_reader> timestamp_reader_metadata( new l500_timestamp_reader_from_metadata() );
         auto enable_global_time_option = std::shared_ptr<global_time_option>( new global_time_option() );

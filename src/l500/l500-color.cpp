@@ -60,7 +60,10 @@ namespace librealsense
 
         std::unique_ptr<frame_timestamp_reader> timestamp_reader_metadata(new ivcam2::l500_timestamp_reader_from_metadata());
         auto enable_global_time_option = std::shared_ptr<global_time_option>(new global_time_option());
-        auto raw_color_ep = std::make_shared<uvc_sensor>("RGB Camera", get_backend()->create_uvc_device(color_devices_info.front()),
+        auto color_uvc = get_backend()->create_uvc_device(color_devices_info.front());
+        if (!color_uvc)  // RSUSB returns null when the interface cannot be claimed
+            throw backend_exception("cannot access color sensor");
+        auto raw_color_ep = std::make_shared<uvc_sensor>("RGB Camera", color_uvc,
             std::unique_ptr<frame_timestamp_reader>(new global_timestamp_reader(std::move(timestamp_reader_metadata), _tf_keeper, enable_global_time_option)),
             this);
         auto color_ep = std::make_shared<l500_color_sensor>(this, raw_color_ep, ctx, l500_color_fourcc_to_rs2_format, l500_color_fourcc_to_rs2_stream);
