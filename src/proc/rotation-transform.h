@@ -16,6 +16,7 @@ namespace librealsense
 
     protected:
         void init_profiles_info(const rs2::frame* f) override;
+        rs2::frame prepare_frame(const rs2::frame_source& source, const rs2::frame& f) override;
         void process_function( uint8_t * const dest[], const uint8_t * source, int width, int height, int actual_size, int input_size) override;
     };
 

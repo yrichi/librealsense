@@ -113,6 +113,19 @@ namespace librealsense
         }
     }
 
+    // The incoming frame carries the sensor's raw (portrait) geometry; the output must carry the
+    // target geometry (rotate_resolution, or l500_confidence_resolution for confidence), because
+    // process_function recovers the source geometry from the output frame's width/height.
+    rs2::frame rotation_transform::prepare_frame(const rs2::frame_source& source, const rs2::frame& f)
+    {
+        init_profiles_info(&f);
+        auto vf = f.as<rs2::video_frame>();
+        int width = vf.get_height();
+        int height = vf.get_width() * (_target_stream == RS2_STREAM_CONFIDENCE ? 2 : 1);
+        return source.allocate_video_frame(_target_stream_profile, f, _target_bpp,
+            width, height, width * _target_bpp, _extension_type);
+    }
+
     void rotation_transform::process_function( uint8_t * const dest[], const uint8_t * source, int width, int height, int actual_size, int input_size)
     {
         int rotated_width = height;
