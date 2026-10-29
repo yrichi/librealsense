@@ -46,6 +46,51 @@
 >
 > Enumerates and streams **depth, IR, confidence, colour and IMU** with real data, verified in `realsense-viewer` (0.49 – 8.2 m observed across test scenes).
 >
+> ### L515 native on macOS / Apple Silicon — branch `exp1-merge-2.59.1`
+>
+> This branch merges the L500 restoration onto upstream **v2.59.1** and adds the fixes that make the
+> L515 work **natively on Apple Silicon** (tested: M-series Mac, macOS 26, firmware 1.5.8.1, USB 3 direct).
+> To our knowledge this is the first documented native L515 depth + IMU capture on Apple Silicon —
+> previously the only working path was a Linux VM with USB passthrough
+> (see [#11815](https://github.com/realsenseai/librealsense/issues/11815),
+> [#9916](https://github.com/realsenseai/librealsense/issues/9916)).
+>
+> Measured on real hardware (2026-10-29):
+>
+> | | |
+> |---|---|
+> | Depth 1024×768 @ 30 fps | 2 h continuous, **216,085 frames, 0 dropped** |
+> | Open/close cycles | **100/100** (7.7–9.4 s each, init ~1 s) |
+> | IMU | gyro 199 Hz, accel 203 Hz, both + depth concurrently |
+> | Colour 1280×720 | 29.4 fps |
+> | Record → `.bag` | 0% loss, file re-opens, Ctrl-C mid-record closes cleanly |
+>
+> Build (the three non-default flags matter):
+>
+> ```sh
+> cmake -B build -DCMAKE_BUILD_TYPE=Release -DFORCE_RSUSB_BACKEND=ON \
+>       -DBUILD_WITH_L500=ON -DBUILD_ROSBAG2=OFF -DBUILD_PYTHON_BINDINGS=ON
+> cmake --build build --target pyrealsense2 -j
+> ```
+>
+> - `BUILD_WITH_L500=ON` — off by default; without it the build silently has no L515.
+> - `BUILD_ROSBAG2=OFF` — with rosbag2 on, the recorder only writes ROS2 `.db3`; off, it writes and
+>   re-reads classic `.bag` (reading `.bag` works either way).
+> - **Run as root** (`sudo`). macOS ≥ 12.3 attaches its own UVC driver to the camera's interfaces;
+>   libusb can only detach it by capturing the whole device, which requires root (or a VM entitlement
+>   Apple does not grant to normal apps — libusb [#1014](https://github.com/libusb/libusb/issues/1014)).
+> - The hidapi HID path is structurally dead under whole-device capture (macOS tears down its HID
+>   driver, so IOHIDManager sees nothing). The IMU uses the generic libusb interrupt-endpoint path
+>   instead, as upstream does on `development` since
+>   [#15804](https://github.com/realsenseai/librealsense/pull/15804).
+>
+> ⚠️ **Firmware wedge, applies on every host (Linux and VM included).** If a process dies while the
+> device is captured and streaming (crash, SIGKILL), the firmware's depth function is left stuck:
+> enumeration, init and colour still work, but the depth XU is refused (STALL / "busy"), zero depth
+> frames, and `hardware_reset()` does not help. The only remedy is to **unplug the camera for
+> ~2 minutes** (VBUS must actually drop). Firmware 1.5.8.1 (June 2021) is final, so this will never
+> be fixed — close your sensors in a `finally`/destructor and never hard-kill a capturing process.
+>
 > ### Known gaps
 >
 > Treat these as unproven rather than broken:
